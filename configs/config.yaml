@@ -1,0 +1,21 @@
+paths: 
+  saved_files_paths:
+    val_logits_path: '/home/my_project/results/val_logits/'
+    mcd_logits_path: '/home/my_project/results/mcd_logits/'
+    targets_path: '/home/my_project/results/targets/'
+    plots_path: '/home/my_project/results/plots/'
+    roc_auc_dict_path: '/home/my_project/results/roc_auc_score/'
+    names:
+      logits_val_name: 'logits_val'
+      targets_val_name: 'targets_val'
+      plots_ue_classic_name: 'plot_classic_ue'
+      plots_ue_mcd_name: 'plot_mcd_ue'
+      roc_auc_dict_classic_name: 'roc_auc_score_classic_ue'
+      roc_auc_dict_mcd_name: 'roc_auc_score_mcd_ue'
+      logits_mcd_name: 'logits_mcd'
+      logits_mcd_all_name: 'logits_mcd_all'
+
+monte_carlo_dropout_settings:
+  n_binary_masks: 5 # this is not enough, it takes 30-50
+
+device: 'cpu:0'
