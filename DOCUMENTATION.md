@@ -44,8 +44,8 @@ When using the library, you need to add it to the list of directories in which t
 import sys
 import os
 
-base_path = '/home/my_project/uncertainty_estimation_lib'
-sys.path.append(os.path.join(base_path, 'src'))
+base_path = '/home/my_project/uncertainty_estimation_lib/src'
+sys.path.append(base_path)
 
 ```
 
