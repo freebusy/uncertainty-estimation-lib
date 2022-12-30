@@ -16,32 +16,65 @@ class UncertaintyEstimation():
     quantitative estimate of uncertainty using the classical approach of entropy, 
     maximum logits, maximum probability, or using the Monte Carlo dropout method 
     (MCD) of averaged entropy, scoring, coefficient of variation, probability 
-    variation, softmax coefficient, logits coefficient. 
+    variation, softmax coefficient, logits coefficient
 
     Atributes
     ---------
-
+    conf : str or object
+        configuration to run (the config itself or the path to it is passed)
+    topn : int, default=1
+        the number of top forecasts taken into account in the calculation
+    saving_plots : bool, default=True
+        save the schedule or not
+    saving_roc_auc : bool, default=True
+        save the roc_auc score or not
+    draw_plots : bool, default=False
+        drawing a graph at once
+    path_saving_plots : str, default=None
+        the way to save graphs
+    metrics : str, default='accuracy'
+        the metric by which the method works
+    metrics_average : str, default='micro'
+        the type of averaging performed for the data
+    mixed_precision : bool, default=False
+        mixed precision to include or not
+    n_masks : int, default=None
+        number of Monte-Carlo dropout masks
 
     Methods
     -------
-    - calculate_logits_val: allows you to get logits (outputs of the model) for 
-      further processing and estimation of uncertainty according to the classical 
-      approach;
-    - calculate_logits_mcd: allows you to get logits for further processing and 
-      estimation of uncertainty using the Monte Carlo dropout method;
-    - calculate_classic_ue: allows you to get an estimate of uncertainty according 
-      to the classical approach (entropy and/or maximum logits and/or maximum 
-      probability), an estimate of roc_auc, as well as a graph for the metric;
-    - calculate_mcd_ue: allows you to get an estimate of uncertainty using the 
-      Monte-Carlo dropout method (mean entropy, and/or logits ratio, and/or 
-      softmax ratio, and/or probability variation, and/or variation ratio, and/or 
-      bald score), an estimate of roc_auc, as well as a graph for the metric.
+    calculate_logits_val(model, dataloader, mixed_precision=False) : allows you to 
+        get logits (outputs of the model) for further processing and estimation of 
+        uncertainty according to the classical approach
+    calculate_logits_mcd(model, dataloader, mixed_precision=False, n_masks=None) : 
+        allows you to get logits for further processing and estimation of 
+        uncertainty using the Monte Carlo dropout method
+    calculate_classic_ue(methods_ue='all', topn=1, saving_plots=True, 
+                         saving_roc_auc=True, draw_plots=False, logits=None, 
+                         targets=None, path_saving_plots=None, metrics='accuracy', 
+                         metrics_average='micro') : 
+        allows you to get an estimate of uncertainty according to the classical 
+        approach (entropy, maximum logits, maximum probability), an estimate of 
+        roc_auc, as well as a graph for the metric
+    calculate_mcd_ue(methods_ue='all', topn=1, saving_plots=True, 
+                     saving_roc_auc=True, draw_plots=False, logits=None, 
+                     targets=None, mcd_logits_list=None, path_saving_plots=None, 
+                     metrics='accuracy', metrics_average='micro') : 
+        allows you to get an estimate of uncertainty using the Monte-Carlo dropout 
+        method (mean entropy, logits ratio, softmax ratio, probability variation, 
+        variation ratio, bald score), an estimate of roc_auc, as well as a graph 
+        for the metric
     """
 
     def __init__(self, conf):
-        """"
+        """
         Constructor of the Uncertainty class. 
-        Accepts config (config format .yaml or str - path to the config)
+
+        Parameters
+        ----------
+        conf : str or object
+            configuration to run (the config itself or the path to it is passed)
+            (config format .yaml or str - path to the config)
         """
         if isinstance(conf, str):
             with open(conf, "r") as stream:
@@ -51,6 +84,25 @@ class UncertaintyEstimation():
 
 
     def __create_logits(self, model, dataloader, device):
+        """
+        Method for running data through the model and getting logits
+
+        Parameters:
+        ----------
+        model : BertForSequenceClassification / another models
+            A ready-made trained model, in which there are methods predict, eval, 
+            train
+        dataloader : torch.utils.data.dataloader.DataLoader / an iterable object 
+                     whose elements are a dictionary {name: data}
+            Used to load data into the model 
+        device : torch.device
+            the device on which the calculations will be performed
+
+        Returns
+        -------
+        logits_list : list of shape(n_samples, n_logits)
+            list of logit sets
+        """
         logits_list = list()
         idx = 0
         for b_input_data in tqdm(iter(dataloader)):
@@ -78,7 +130,19 @@ class UncertaintyEstimation():
 
 
     def __converte_logits_to_array(self, logits_ds):
-        # creating a list of logits to save and use
+        """
+        Converting a list of logit sets into an array for correct operation
+
+        Parameters:
+        ----------
+        logits_ds : list or array of shape (n_samples, n_logits)
+            list or array of logit sets
+
+        Returns
+        -------
+        logits_list : array of shape (n_samples, n_logits)
+            array of logit sets 
+        """
         logits_list = list()
         for logits in logits_ds:
             logits_list.append(np.array(logits))
@@ -86,16 +150,48 @@ class UncertaintyEstimation():
         return logits_list
 
     
-    def __save_results(self, logits_list, mode='val'):
-        # save df, logits and targets in .csv, .npy
+    def __save_results(self, logits_array, mode='val'):
+        """
+        Method for saving results
+
+        Parameters:
+        ----------
+        logits_array : array of shape (n_samples, n_logits) or 
+                       shape(n_masks, n_samples, n_logits)
+            array of logit sets
+        mode : str, default=None
+            save mode (classic / Monte Carlo dropout)
+
+        Returns
+        -------
+        None 
+
+        """
         saved_dict = self.conf['paths']['saved_files_paths']
         if mode == 'val':
-            np.save(saved_dict['val_logits_path'] + saved_dict['names']['logits_val_name'], logits_list)
+            np.save(saved_dict['val_logits_path'] + saved_dict['names']['logits_val_name'], logits_array)
         elif mode == 'mcd':
-            np.save(saved_dict['mcd_logits_path'] + saved_dict['names']['logits_mcd_all_name'], logits_list)    
+            np.save(saved_dict['mcd_logits_path'] + saved_dict['names']['logits_mcd_all_name'], logits_array)    
 
 
     def __accuracy_topn(self, targets, preds, n=3):
+        """
+        Calculating the accuracy of the top n
+
+        Parameters
+        ----------
+        targets : array of shape(n_samples, )
+            array of targets
+        preds : array of shape(n_samples, )
+            array of predicts
+        n : int, default=3
+            the number of forecasts taken into account for the current sample (top n)
+
+        Returns
+        -------
+        accuracy : float
+            accuracy of top n
+        """
         if n == 1:
             return np.count_nonzero(targets == preds) / len(targets)
         else:
@@ -103,7 +199,27 @@ class UncertaintyEstimation():
 
    
     def __metrics_rejection(self, x, unc, y, preds):
-        # ф-ция расчета аккураси с отсевом по unc (неопределенности)
+        """
+        Method for calculating accuracy with unc dropout (uncertainty)
+
+        x, value, targets, preds
+
+        Parameters
+        ----------
+        x : list of shape(n_points_by_ox, )
+            a list with the number of samples being discarded
+        unc : array of shape(n_samples, )
+            an array with uncertainties for each sample
+        y : array of shape(n_samples, )
+            array of targets
+        preds : array of shape(n_samples, )
+            array of predicts
+
+        Returns
+        -------
+        array of shape(x,)
+            array with metric results on non-discarded samples
+        """
         y = y.astype(np.int_)
         preds = preds.astype(np.int_)
         metrics = {
@@ -122,14 +238,53 @@ class UncertaintyEstimation():
 
 
     def __entropy(self, x):
+        """
+        Entropy calculation based on the transmitted value
+
+        Parameters
+        ----------
+        x : array or list of shape(n_logits, )
+            a set of values for which entropy is to be calculated
+        
+        Returns
+        -------
+        float
+            calculated entropy value
+        """
         return np.sum(-x * np.log(np.clip(x, 1e-8, 1)), axis=-1)
 
 
     def __mean_entropy(self, sampled_probabilities):
+        """
+        Calculate the average entropy from the transmitted probabilities
+
+        Parameters
+        ----------
+        sampled_probabilities : array or list of shape(n_samples, n_masks, n_logits)
+            a set of values for which entropy is to be calculated
+        
+        Returns
+        -------
+        array of shape(n_samples, )
+            calculated entropy values
+        """
         return self.__entropy(np.mean(sampled_probabilities, axis=1))
 
 
     def __bald(self, sampled_probabilities):
+        """
+        Calculate the bald score based on the transmitted probabilities
+
+        Parameters
+        ----------
+        sampled_probabilities : array or list of shape(n_samples, n_masks, n_logits)
+            a set of values for which bald score is to be calculated
+        
+        Returns
+        -------
+        array of shape(n_samples, )
+            calculated bald score values
+        """
         predictive___entropy = self.__entropy(np.mean(sampled_probabilities, axis=1))
         expected___entropy = np.mean(self.__entropy(sampled_probabilities), axis=1)
 
@@ -137,6 +292,22 @@ class UncertaintyEstimation():
 
 
     def __probability_variance(self, sampled_probabilities, mean_probabilities=None):
+        """
+        Method for calculating probability variation
+
+        Parameters
+        ----------
+        sampled_probabilities : array or list of shape(n_samples, n_masks, n_logits)
+            a set of values for which probability variance is to be calculated
+        mean_probabilities : array or list of shape(n_samples, n_logits), default=None
+            a set of averaged probabilities for Monte-Carlo dropout masks
+
+        Returns
+        -------
+        array of shape(n_samples, )
+            calculated probability variance values
+
+        """
         if mean_probabilities is None:
             mean_probabilities = np.mean(sampled_probabilities, axis=1)
 
@@ -146,6 +317,19 @@ class UncertaintyEstimation():
 
 
     def __var_ratio(self, sampled_probabilities):
+        """
+        Method for calculating varition ratio
+
+        Parameters
+        ----------
+        sampled_probabilities : array or list of shape(n_samples, n_masks, n_logits)
+            a set of values for which varition ratio is to be calculated
+
+        Returns
+        -------
+        array of shape(n_samples, )
+            calculated varition ratio values
+        """
         top_classes = np.argmax(sampled_probabilities, axis=-1)
         # count how many time repeats the strongest class
         mode_count = lambda preds: np.max(np.bincount(preds))
@@ -155,22 +339,85 @@ class UncertaintyEstimation():
 
 
     def __n_largets(self, arr, idx=None, n=10):
+        """
+        Method for calculating and issuing top n maximum logits and their indexes
+
+        Parameters
+        ----------
+        arr : array of shape(n_logits, )
+            an array of logits of one sample
+        idx : array of shape(n, ), default=None
+            array of indexes of top n logits
+        n : int, default=10
+            number of top n logits
+
+        Returns
+        -------
+        array of shape(n, )
+            array of top n logits
+        array of shape(n, )
+            array of indexes of top n logits
+        """
         if idx is None:
             idx = np.argsort(arr)[-n:].flatten()
         return arr[idx], idx
 
 
     def __get_index_topn(self, logits):
+        """
+        Calculation of top n indexes
+
+        Parameters:
+        ----------
+        logits : array of shape(n_logits, )
+            array of logits
+
+        Returns
+        -------
+        array of shape(n, )
+            indexes of top n logits
+        """
         return np.asarray([self.__n_largets(np.array(l), n=self.topn)[1] for l in logits])
 
     
     def __get_logits_topn(self, logits, logits_idx_topn=None):
+        """
+        Calculation of top n logits
+
+        Parameters:
+        ----------
+        logits : array of shape(n_logits, )
+            array of logits
+        logits_idx_topn : array of shape(n, ) of top n indexes, default=None
+            indexes of top n logits
+
+        Returns
+        -------
+        array of shape(n, )
+            top n logits
+        """
         if logits_idx_topn is None:
             logits_idx_topn = self.__get_index_topn(logits)
         return np.asarray([self.__n_largets(np.array(l), idx=logits_idx_topn[i])[0] for i, l in enumerate(logits)])
 
 
     def __compute_classic_uncertainty(self, logits, methods_ue: Union[List[str], str] = 'all'):
+        """
+        A method for calculating uncertainty according to the classical method
+
+        Parameters:
+        ----------
+        logits : array of shape(n_sample, n_logits)
+            array of logits
+        methods_ue : list[str] or 'all', default='all'
+            methods for estimating uncertainty
+
+        Returns
+        -------
+        classic_ue_dict : {str: array of shape(n_samples, )} 
+            a dictionary whose keys are methods, and whose values are an estimate of 
+            uncertainty for all samples
+        """
         if self.topn > 1:
             logits = self.__get_logits_topn(logits)
 
@@ -195,6 +442,23 @@ class UncertaintyEstimation():
 
 
     def __get_roc_auc_dict(self, errors, ue_dict):
+        """
+        Calculation and issuance of roc_auc
+
+        Parameters
+        ----------
+        errors : array or list of shape(n_samples, )
+            array of prediction errors
+        ue_dict : {str: array of shape(n_samples, )} 
+            a dictionary whose keys are methods, and whose values are an estimate of 
+            uncertainty for all samples
+
+        Returns
+        -------
+        roc_auc_dict : {str: float}
+            a dictionary whose keys are methods and whose values are roc auc score 
+            for all samples
+        """
         roc_auc_dict = dict()
         for key, value in ue_dict.items():
             roc_auc_dict[key] = roc_auc_score(errors, value)
@@ -202,8 +466,24 @@ class UncertaintyEstimation():
         return roc_auc_dict
 
 
-    def __compute_mcd_uncertainty(self, mc_logits, methods_ue: Union[List[str], str] = 'all'):
+    def __compute_mcd_uncertainty(self, mcd_logits, methods_ue: Union[List[str], str] = 'all'):
+        """
+        A method for calculating uncertainty according to the Monte-Carlo dropout 
+        method
 
+        Parameters:
+        ----------
+        mcd_logits : array of shape(n_masks, n_samples, n_logits)
+            array with sets of logits
+        methods_ue : list[str] or 'all', default='all'
+            methods for estimating uncertainty
+
+        Returns
+        -------
+        mcd_ue_dict : {str: array of shape(n_samples, )} 
+            a dictionary whose keys are methods, and whose values are an estimate of 
+            uncertainty for all samples
+        """
         methods = {
             'lr': lambda logs, probs: np.array([1 - np.max(l, axis=0) for l in logs.mean(0)]),
             'sr': lambda logs, probs: np.array([1 - np.max(l, axis=0) for l in probs.mean(0)]),
@@ -215,7 +495,7 @@ class UncertaintyEstimation():
 
         assert methods_ue == 'all' or all([m in methods for m in methods_ue])
 
-        probs_mc = softmax(mc_logits, axis=-1)
+        probs_mc = softmax(mcd_logits, axis=-1)
 
         if methods_ue == 'all':
             methods_ue = list(methods.keys())
@@ -223,7 +503,7 @@ class UncertaintyEstimation():
         mcd_ue_dict = dict()
 
         for method in methods_ue:
-            mc = methods[method](mc_logits, probs_mc)
+            mc = methods[method](mcd_logits, probs_mc)
             mcd_ue_dict[method] = mc
         
         return mcd_ue_dict
@@ -231,12 +511,34 @@ class UncertaintyEstimation():
 
     def __save_and_draw_plots(self, y_dict, targets, preds, xlabel='n_rejected', ylabel='accuracy_score', 
                             figsize=(10, 8), type_ue='classic'):
+        """
+        Method for drawing graphs and saving parameters
+
+        Parameters
+        ----------
+        y_dict : {}
+        targets : array or list of shape(n_samples, )
+            array of targets
+        preds : array or list of shape (n_samples, )
+            array of predicts
+        xlabel : str, default='n_rejected'
+            x-axis caption
+        ylabel : str, default='accuracy_score'
+            y-axis caption
+        figsize : (int, int), default=(10, 8)
+            a tuple with the dimensions of the graph on the x and y axis
+        type_ue : str, default='classic'
+            the parameter to save is classic or Monte-Carlo dropout
+
+        Returns
+        -------
+        None
+        """
         # building plots
         x = range(10, len(targets), 1000)
         plt.figure(figsize=figsize)
         
         for key, value in y_dict.items():
-            # acc_y = self.__accuracy_rejection(x, value, targets, preds)
             acc_y = self.__metrics_rejection(x, value, targets, preds)
 
             if self.topn > 1:
@@ -271,6 +573,21 @@ class UncertaintyEstimation():
 
 
     def __save_roc_auc(self, roc_auc_dict, type_ue='classic'):
+        """
+        Saving roc auc
+
+        Parameters
+        ----------
+        roc_auc_dict : {str: float}
+            a dictionary whose keys are methods and whose values are roc auc score 
+            for all samples
+        type_ue : str, default='classic'
+            the parameter to save is classic or Monte-Carlo dropout
+
+        Returns
+        -------
+        None
+        """
         saved_dict = self.conf['paths']['saved_files_paths']
         if self.topn > 1:
             if type_ue == 'classic':
@@ -285,22 +602,55 @@ class UncertaintyEstimation():
     
 
     def __get_logits_classic(self, model, val_dataloader):
-        # we run the entire validation dataset through the model to obtain validation logits
+        """
+        The method that sets up and starts the calculation of logits
+
+        Parameters
+        ----------
+        model : BertForSequenceClassification / another models
+            A ready-made trained model, in which there are methods predict, eval, 
+            train
+        dataloader : torch.utils.data.dataloader.DataLoader / an iterable object 
+                     whose elements are a dictionary {name: data}
+            Used to load data into the model 
+
+        Returns
+        -------
+        logits_list : list of shape(n_samples, n_logits)
+            list of logit sets
+        """
         device = torch.device(self.conf['device'])
         model.to(device)
         model.eval()
-        logits_ds = self.__create_logits(model, val_dataloader, device)
+        logits_list = self.__create_logits(model, val_dataloader, device)
 
-        return logits_ds
+        return logits_list
 
 
     def __get_logits_mcd(self, model, dataloader):
-        # run the model with different masks N_MASKS times, get logits on different masks, save them for later use
+        """
+        The method that sets up and starts the calculation of Monte-Carlo dropout 
+        logits
+
+        Parameters
+        ----------
+        model : BertForSequenceClassification / another models
+            A ready-made trained model, in which there are methods predict, eval, 
+            train
+        dataloader : torch.utils.data.dataloader.DataLoader / an iterable object 
+                     whose elements are a dictionary {name: data}
+            Used to load data into the model 
+
+        Returns
+        -------
+        logits_list : list (n_masks, n_samples, n_logits)
+            list of logit sets
+        """
         device = torch.device(self.conf['device'])
         model.to(device)
-        model.train() # to explicitly enable dropout
-        saved_dict = self.conf['paths']['saved_files_paths']
-        mc_res = list()
+        # to explicitly enable dropout
+        model.train()
+        mcd_res = list()
         if self.n_masks is None:
             N_MASKS = self.conf['monte_carlo_dropout_settings']['n_binary_masks']
         else:
@@ -309,14 +659,36 @@ class UncertaintyEstimation():
             _reset_mc_dropout(model, batch_idx=0, verbose=False)
             logits_ds = self.__create_logits(model, dataloader, device)
             logits_arr = self.__converte_logits_to_array(logits_ds)
-            mc_res.append(logits_arr)
-            # to be able to save the logits of each mask separately
-            # np.save(saved_dict['mcd_logits_path'] + saved_dict['names']['logits_mcd_name'] + f'_{i}', logits_arr)
+            mcd_res.append(logits_arr)
 
-        return np.asarray(mc_res) 
+        return np.asarray(mcd_res) 
 
     
     def __update_attributes(self, topn, saving_plots, saving_roc_auc, draw_plots, path_saving_plots, metrics, metrics_average):
+        """        
+        Updating attributes with passed values
+
+        Parameters
+        ----------
+        topn : int
+            the number of top forecasts taken into account in the calculation
+        saving_plots : bool
+            save the schedule or not
+        saving_roc_auc : bool
+            save the roc_auc score or not
+        draw_plots : bool
+            drawing a graph at once
+        path_saving_plots : str
+            the way to save graphs
+        metrics : str
+            the metric by which the method works
+        metrics_average : str
+            the type of averaging performed for the data
+
+        Returns
+        -------
+        None
+        """
         assert isinstance(topn, int) and topn > 0  
         assert isinstance(saving_plots, bool)
         assert isinstance(saving_roc_auc, bool)
@@ -344,13 +716,13 @@ class UncertaintyEstimation():
         ----------
         model : BertForSequenceClassification / another models
             A ready-made trained model, in which there are methods predict, eval, 
-            train.
+            train
         dataloader : torch.utils.data.dataloader.DataLoader / an iterable object 
                      whose elements are a dictionary {name: data}
-            Used to load data into the model. 
+            Used to load data into the model
         mixed_precision : bool, default=False
             Mixed precision is the use of 16—bit and 32-bit floating point types in the 
-            model during training so that it runs faster and uses less memory. 
+            model during training so that it runs faster and uses less memory 
 
         Returns
         -------
@@ -369,7 +741,6 @@ class UncertaintyEstimation():
 
 
     def calculate_logits_mcd(self, model, dataloader, mixed_precision=False, n_masks=None):
-        
         """
         This method calculates logits based on a validation sample, but the output is 
         N different sets of logits. Next, these logits will be used to quantify 
@@ -402,13 +773,12 @@ class UncertaintyEstimation():
         self.mixed_precision = mixed_precision
         self.n_masks = n_masks
         model_copy = copy.deepcopy(model)
-        # convert the dropout layer (last or all, depending on the passed parameter dropout_subs='last' or dropout_subs='all')
+        # convert the dropout layer
         _convert_dropouts(model_copy)
         # activate dropout
         _activate_mc_dropout(model_copy, activate=True, verbose=False)
         # reset the old MCDropout mask, create a new one
         _reset_mc_dropout(model_copy, batch_idx=0, verbose=False)
-        # saved_dict = conf['paths']['saved_files_paths']
         mcd_res = self.__get_logits_mcd(model_copy, dataloader)
         self.__save_results(mcd_res, mode='mcd')
         
@@ -472,8 +842,8 @@ class UncertaintyEstimation():
             logits = np.load(load_dict['val_logits_path'] + load_dict['names']['logits_val_name'] + '.npy', allow_pickle=True)
         if targets is None:
             targets = np.load(load_dict['targets_path'] + load_dict['names']['targets_val_name'] + '.npy', allow_pickle=True)
-            
-        logits = logits.astype(np.float32) # скорее всего в этом дело, т.к. энтропия выдает nan при == 0, уже было такое
+        # since entropy outputs nan at values close to 0, you need to switch to the float32 type
+        logits = logits.astype(np.float32) 
         preds = np.array([np.argmax(l, axis=0) for l in logits])
         errors = (targets != preds).astype(int)
 
@@ -583,7 +953,40 @@ class UncertaintyEstimation():
 
 
 class DropoutMC(torch.nn.Module):
+    """
+    The DropoutMC class the standard class of the torch.nn.Module, which contains 
+    some methods for activating dropout Monte-Carlo, creating masks
+
+    Atributes
+    ---------
+    activate : bool, default=False
+        layer activation 
+    p : float
+        probability of layer loss
+    p_init : float
+        probability of layer loss with which we initialize
+    batch_idx : int
+        batch index
+    binomial : torch.distrib
+        binomial distribution from torch
+
+    Methods
+    -------
+    _create_mask(input=None) : Method for creating a mask
+    _truncate_mask(input, mask): Method for truncating the mask
+    forward(x) : Method for forward
+    """
     def __init__(self, p: float, activate=False):
+        """
+        Constructor of the DropoutMC class
+
+        Parameters
+        ----------
+        p : float
+            probability
+        activate : bool, default=False
+            layer activation        
+        """
         super().__init__()
         self.activate = activate
         self.p = p
@@ -594,7 +997,20 @@ class DropoutMC(torch.nn.Module):
     def _create_mask(
         self,
         input: torch.Tensor = None,
-    ):
+    ):  
+        """
+        Method for creating a mask
+
+        Parameters
+        ----------
+        input : torch.Tensor, default=None
+            the tensor of the layer to be masked
+
+        Returns
+        -------
+        mask : torch.Tensor
+            masking tensor
+        """
         device = input.device
         shape = input.shape
         if len(input.shape) == 3:
@@ -608,11 +1024,40 @@ class DropoutMC(torch.nn.Module):
         return mask
 
     def _truncate_mask(self, input, mask):
+        """
+        Method for truncating the mask
+
+        Parameters
+        ----------
+        input : torch.Tensor, default=None
+            the tensor of the layer to be masked
+        mask : torch.Tensor
+            masking tensor
+
+        Returns
+        -------
+        truncated_mask : torch.Tensor
+            truncated tensor mask
+        """
         slicers = [slice(0, 1)] + [slice(0, x) for x in input.shape[1:]]
         truncated_mask = mask[slicers]
         return truncated_mask
 
     def forward(self, x: torch.Tensor):
+        """
+        Method for forward
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            tensor with data
+
+        Returns
+        -------
+        torch.Tensor
+            the result of applying a mask to a x weighted by the probability of 
+            including the layer
+        """
         if self.batch_idx == 0:
             self.mask = self._create_mask(x)
         self.batch_idx += 1
@@ -623,7 +1068,22 @@ class DropoutMC(torch.nn.Module):
 
 def _convert_to_mc_dropout(
     model: torch.nn.Module, substitution_dict: Dict[str, torch.nn.Module] = None
-):
+    ):
+    """
+    Convert dropout layers (Monte-Carlo dropout)
+    
+    Parameters
+    ----------
+    model : torch.nn.Module
+        A ready-made trained model, in which there are methods predict, eval, 
+        train
+    substitution_dict : {str, torch.nn.Module]}, default=None
+        dictionary with substitutions
+
+    Returns
+    -------
+    None
+    """
     for i, layer in enumerate(list(model.children())):
         proba_field_name = "dropout_rate" if "flair" in str(type(layer)) else "p"
         module_name = list(model._modules.items())[i][0]
@@ -640,6 +1100,25 @@ def _convert_to_mc_dropout(
 def _activate_mc_dropout(
     model: torch.nn.Module, activate: bool, random: float = 0.0, verbose: bool = False
 ):
+    """
+    Activate dropout layers
+
+    Parameters
+    ----------
+    model : torch.nn.Module
+        A ready-made trained model, in which there are methods predict, eval, 
+        train 
+    activate: bool
+        activation layer
+    random : float, default=0.0
+        probability of activation
+    verbose : bool, default=False 
+        display information about activated layers
+
+    Returns
+    -------
+    None
+    """
     for layer in model.children():
         if isinstance(layer, DropoutMC):
             if verbose:
@@ -660,6 +1139,23 @@ def _activate_mc_dropout(
 def _reset_mc_dropout(
     model: torch.nn.Module, batch_idx: int, verbose: bool = False
 ):
+    """
+    Reset the old MCDropout mask and create a new one
+
+    Parameters
+    ----------
+    model : torch.nn.Module
+        A ready-made trained model, in which there are methods predict, eval, 
+        train
+    batch_idx: int
+        butch index
+    verbose : bool, default=False 
+        display information about activated layers
+
+    Returns
+    -------
+    None
+    """
     for layer in model.children():
         if isinstance(layer, DropoutMC):
             if verbose:
@@ -674,6 +1170,19 @@ def _reset_mc_dropout(
 
 
 def _convert_dropouts(model, dropout_subs='all'):
+    """
+    Convert dropout layers
+
+    Parameters
+    ----------
+    model : torch.nn.Module
+        A ready-made trained model, in which there are methods predict, eval, 
+        train
+
+    Returns
+    -------
+    None
+    """
     dropout_ctor = lambda p, activate: DropoutMC(
         p=p, activate=False
     )
@@ -685,4 +1194,4 @@ def _convert_dropouts(model, dropout_subs='all'):
         _convert_to_mc_dropout(model, {"Dropout": dropout_ctor, "StableDropout": dropout_ctor})
 
     else:
-        raise ValueError(f"Wrong ue args {ue_args.dropout_subs}")
+        raise ValueError(f"Wrong ue args")
