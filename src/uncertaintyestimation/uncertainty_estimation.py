@@ -65,7 +65,6 @@ class UncertaintyEstimation():
         variation ratio, bald score), an estimate of roc_auc, as well as a graph 
         for the metric
     """
-
     def __init__(self, conf):
         """
         Constructor of the Uncertainty class. 
