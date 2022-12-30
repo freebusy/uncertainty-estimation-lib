@@ -1186,12 +1186,4 @@ def _convert_dropouts(model, dropout_subs='all'):
     dropout_ctor = lambda p, activate: DropoutMC(
         p=p, activate=False
     )
-
-    # if dropout_subs == "last":
-    #     _set_last_dropout(model, dropout_ctor(p=0.3, activate=False))
-    
-    if dropout_subs == "all":
-        _convert_to_mc_dropout(model, {"Dropout": dropout_ctor, "StableDropout": dropout_ctor})
-
-    else:
-        raise ValueError(f"Wrong ue args")
+    _convert_to_mc_dropout(model, {"Dropout": dropout_ctor, "StableDropout": dropout_ctor})
